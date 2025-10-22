@@ -6,6 +6,22 @@ __pycache__/
 # C extensions
 *.so
 
+# MacOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Anaconda
+.anaconda/
+.anaconda_backup/
+# Spyder
+.spyderproject
+.spyproject
+# Jupyter Notebook
+.ipynb_checkpoints
+
+
 # Distribution / packaging
 .Python
 build/
