@@ -1,3 +1,40 @@
+"""
+Distribution fitting and PIT utilities
+
+This module fits marginal distributions (Normal / Student-t / Empirical) to
+daily log-returns per ticker, selects the best marginal per ticker using
+information criteria and goodness-of-fit tests, and computes Probability
+Integral Transform (PIT) series (Uniform(0,1)) for downstream copula analysis.
+
+Main methods
+
+- run_fitting
+    - Description: Fit candidate marginals for each column in a returns DataFrame,
+        choose the best model per ticker, and return the PIT DataFrame and a
+        summary table of selected models and parameters.
+    - Parameters:
+        - returns (pd.DataFrame): rows are dates, columns are tickers, values are
+            daily log-returns.
+    - Returns: (pit_df, best_table)
+        - pit_df (pd.DataFrame): PIT values per ticker, index aligned to returns.
+        - best_table (pd.DataFrame): per-ticker model choice and fitted parameters.
+
+- get_pit_from_returns
+    - Description: Convenience wrapper that runs fitting on an already-loaded
+        returns DataFrame and returns only the PIT DataFrame (no file I/O).
+    - Parameters:
+        - returns (pd.DataFrame)
+    - Returns: pit_df (pd.DataFrame)
+
+- get_pit_from_path
+    - Description: Load returns from a CSV file and return the PIT DataFrame
+        without saving outputs to disk.
+    - Parameters:
+        - path (Path): path to the returns CSV file.
+    - Returns: pit_df (pd.DataFrame)
+
+"""
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
