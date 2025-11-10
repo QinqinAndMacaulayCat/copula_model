@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "copula-model"
+version = "0.1.0"
+description = "Exploratory Gaussian copula experiments plus S&P 500 data ingestion script."
+readme = "README.md"
+authors = ["QinqinAndMacaulayCat"]
+packages = [{ include = "copula_model" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+numpy = ">=1.23"
+pandas = ">=2.0"
+yfinance = ">=0.2"
+requests = ">=2.31"
+scipy = "^1.16.3"
+ipykernel = "^7.1.0"
+matplotlib = "^3.10.7"
+statsmodels = "^0.14.5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.4"
+pytest-cov = ">=4.1"
+
+[build-system]
+requires = ["poetry-core>=1.7.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = [
+    "tests"
+]
