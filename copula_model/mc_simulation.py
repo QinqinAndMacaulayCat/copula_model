@@ -1,7 +1,35 @@
-
+"""
+Module for Monte Carlo simulation using various copula models.
+"""
 import numpy as np
 from scipy.stats import norm, t, levy_stable
 
+def simulate_independent(n_paths: int,
+                         n_assets: int,
+                         n_steps: int,
+                         random_state: int = None
+                         ) -> np.array:
+    """
+    Simulates paths assuming independence among assets.
+    Parameters
+    ----------
+    n_paths : int
+        Number of simulation paths.
+    n_assets : int
+        Number of assets.
+    n_steps : int
+        Number of time steps.
+    Returns
+    -------
+    np.array
+        Simulated paths.
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    U = np.random.uniform(size=(n_paths, n_steps, n_assets))
+
+    return U
 
 def simulate_multivariate_normal(n_paths: int,
                                     corr_matrix: np.array,
@@ -111,7 +139,7 @@ def simulate_t_copula(n_paths: int,
     np.array
         Simulated paths.
     """
-    
+
     X = simulate_multivariate_normal(n_paths,
                                      corr_matrix,
                                      n_assets,

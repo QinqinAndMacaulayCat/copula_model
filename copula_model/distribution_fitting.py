@@ -198,14 +198,15 @@ def run_fitting(returns: pd.DataFrame):
         pit_df = pd.DataFrame(index=returns.index)
 
     best_table = pd.DataFrame(best_rows).set_index('ticker').sort_values(['best_model','n'], ascending=[True, False])
+
     return pit_df, best_table
 
 
-def main(path: Path = data_path, save: bool = True, out_dir: Path = None, use_parquet: bool = False, best_output: Path = None):
+def main_distr_fitting(returns, save: bool = True, out_dir: Path = None, use_parquet: bool = False, best_output: Path = None):
     """Load returns from path, run fitting, and optionally save/print PIT DataFrame and best_table.
 
     Args:
-        path: Path to input returns CSV.
+        returns: pd.DataFrame of returns data.
         save: whether to save outputs to disk.
         out_dir: directory to save outputs (defaults to input parent).
         use_parquet: if True try to save PIT as parquet (pyarrow required).
@@ -214,7 +215,6 @@ def main(path: Path = data_path, save: bool = True, out_dir: Path = None, use_pa
     Returns:
         pit_df, best_table
     """
-    returns = load_returns_csv(path)
     pit_df, best_table = run_fitting(returns)
 
     if save:
@@ -228,19 +228,13 @@ def main(path: Path = data_path, save: bool = True, out_dir: Path = None, use_pa
                 pit_df.to_parquet(pit_path)
             else:
                 pit_df.to_csv(pit_path, compression='gzip')
-            print('Saved PIT to', pit_path)
         except Exception as e:
             # fallback to csv if parquet failed
             if use_parquet:
                 pit_path = out_dir / 'pit_uniform.csv.gz'
                 pit_df.to_csv(pit_path, compression='gzip')
-                print('Parquet save failed, saved PIT to', pit_path)
             else:
                 raise
-
-        print('PIT shape:', pit_df.shape)
-        print('PIT head:')
-        print(pit_df.head())
 
         # save best_table
         if best_output is None:
@@ -249,7 +243,6 @@ def main(path: Path = data_path, save: bool = True, out_dir: Path = None, use_pa
             best_path = Path(best_output)
             best_path.parent.mkdir(parents=True, exist_ok=True)
         best_table.to_csv(best_path)
-        print('Saved best_table to', best_path)
 
     return pit_df, best_table
 
@@ -266,14 +259,3 @@ def get_pit_from_path(path: Path = data_path) -> pd.DataFrame:
     pit_df, _ = run_fitting(returns)
     return pit_df
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Fit marginals and compute PIT for returns CSV')
-    parser.add_argument('--input', '-i', type=Path, default=data_path, help='Path to returns CSV')
-    parser.add_argument('--out-dir', '-o', type=Path, default=None, help='Directory to save outputs (default: input parent)')
-    parser.add_argument('--no-save', action='store_true', help="Don't save outputs to disk; just run and return")
-    parser.add_argument('--parquet', action='store_true', help='Save PIT as parquet if possible')
-    parser.add_argument('--best-output', type=Path, default=None, help='Path to save best_table CSV (overrides out-dir)')
-    args = parser.parse_args()
-
-    main(path=args.input, save=not args.no_save, out_dir=args.out_dir, use_parquet=args.parquet, best_output=args.best_output)
