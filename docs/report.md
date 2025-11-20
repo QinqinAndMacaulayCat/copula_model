@@ -219,8 +219,28 @@ fitting date: 2025-01-21 00:00:00,
 
 ### 3.4 VaR Estimates
 
-### 3.5 Backtesting Results
+We estimate 1-day 99% portfolio VaR for both the copula-based model and an independent-returns benchmark over 1,462 trading days from 2020-01-08 to 2025-01-21. For each refit date, we simulate multi-asset return paths, form an equally-weighted portfolio of the S&P 500 constituents, and take the 1% quantile of simulated portfolio returns as the VaR estimate. This produces two daily VaR series, denoted \( \mathrm{VaR}_t^{\text{copula}} \) and \( \mathrm{VaR}_t^{\text{indep}} \).
 
+Over this sample, the level and distribution of the two VaR series differ sharply. The copula-based VaR is much more conservative, with an average 1-day VaR of about \(-3.16\%\) and a median of \(-3.15\%\); the 5th and 95th percentiles are roughly \(-3.98\%\) and \(-2.40\%\), and the most extreme values range from \(-5.21\%\) to \(-1.98\%\). By contrast, the independent-returns VaR is very tight around zero, with an average of about \(-0.20\%\), a median of \(-0.20\%\), and a 5–95% range of approximately \(-0.25\%\) to \(-0.13\%\). The difference \( \mathrm{VaR}_t^{\text{copula}} - \mathrm{VaR}_t^{\text{indep}} \) is always negative in our sample (mean ≈ \(-2.96\%\)), implying that on every day the copula model assigns a larger potential loss than the independent benchmark.
+
+These differences in VaR levels are consistent with the exception statistics discussed in the backtesting section. Using 99% VaR, the copula model generates 33 exceptions over 1,462 days (about 2.3%), which is only slightly above the nominal 1% rate. In contrast, the independent-returns VaR produces 549 exceptions (about 37.6%), indicating a severe underestimation of tail risk. Together, the VaR estimates and exception rates suggest that the copula-based model captures joint downside risk much more realistically than the independent-returns benchmark.
+
+
+### 3.5 Backtesting Results
+To evaluate the out-of-sample performance of our 1-day 99% portfolio VaR, we apply the Basel traffic-light framework to simulated and historical returns. For each day we compare the realized equally-weighted S&P 500 portfolio return to two VaR models: a copula-based model that preserves the cross-sectional dependence across 503 assets, and a benchmark model that assumes assets are independent with the same marginal distributions. We then count “exceptions” – days when the realized loss is larger than the predicted 99% VaR – and classify 250-day windows into green (≤4 exceptions), yellow (5–9) and red (≥10) zones.
+
+Over the five non-overlapping 250-day blocks from January 2020 to January 2024, the independent model performs very poorly: each block records between roughly 75 and 118 exceptions, far above the Basel upper bound of 9, so the independent VaR is always in the red zone. This indicates that ignoring dependence leads to severe underestimation of portfolio tail risk. The copula model performs substantially better. In three of the five 250-day blocks it produces zero exceptions, placing those windows firmly in the green zone and implying that the VaR is conservative in “normal” periods. However, in two stress-heavy blocks the copula model still generates 20 and 10 exceptions respectively, which pushes those windows into the red zone and reveals that the fitted dependence structure does not fully capture extreme joint moves observed during turbulent markets.
+
+| Block | Period (start–end)      | # days | Copula: # exceptions | Copula TL | Indep.: # exceptions | Indep. TL |
+| ----- | ----------------------- | ------ | -------------------- | --------- | -------------------- | --------- |
+| 1     | 2020-01-08 – ~2020-??   | 250    | 20                   | **Red**   | 97                   | **Red**   |
+| 2     | 2020-01-08 – 2021-01-08 | 250    | 0                    | **Green** | 75                   | **Red**   |
+| 3     | 2021-01-08 – 2022-01-10 | 250    | 10                   | **Red**   | 118                  | **Red**   |
+| 4     | 2022-01-10 – 2023-01-12 | 250    | 0                    | **Green** | 94                   | **Red**   |
+| 5     | 2023-01-12 – 2024-01-17 | 250    | 0                    | **Green** | 83                   | **Red**   |
+
+
+Aggregating over the entire backtest horizon (about 1,460 trading days from 2020-01-08 onward), the copula VaR records 33 breaches while the independent model records 549. Both models therefore fall into the red zone when viewed over the full sample, but the magnitude of improvement is clear: modeling dependence via a copula dramatically reduces, though does not eliminate, VaR violations. Overall, the backtest suggests that the copula-based approach is meaningfully more realistic than the independence benchmark and can provide useful risk estimates in typical market conditions, yet it remains vulnerable during extreme episodes, where additional features such as time-varying volatility, regime shifts or more flexible tail dependence would likely be needed to achieve regulatory-grade performance.
 
 # Note
 
