@@ -231,6 +231,64 @@ In each refitting, we use the past 5 years of daily returns to fit the marginal 
 
 ### 3.1 Distribution Fitting Results
 
+The marginal-distribution fitting was run over the available return history and produced per-ticker model choices and PIT series.
+
+**Model selection (counts)**
+
+| Best Model | Count | Percent |
+| ---------- | -----:| -------:|
+| Student‑t  | 498   | 99.2%   |
+| Empirical  | 4     | 0.8%    |
+| Normal     | 0     | 0.0%    |
+
+The vast majority of tickers (498 of 502) were best fit by a Student‑t marginal, with only four tickers requiring an empirical fit. No ticker in this run selected a Gaussian marginal under the AIC/BIC + GOF procedure.
+
+**Parameter summary (Student‑t)**
+
+- Degrees of freedom (\(\nu\)): mean = 3.3591, std = 0.3779, min = 2.01, median = 3.3491, max = 5.1234.
+- Location (t_loc): mean ≈ 0.0007941 (daily), typical values near zero.
+- Scale (t_scale): mean ≈ 0.01257 (daily volatility scale).
+
+The small estimated degrees-of-freedom (median ≈ 3.35) indicate pronounced heavy tails in marginal return distributions, which explains the systematic preference for Student‑t marginals over Gaussian.
+
+**PIT diagnostics (pooled across tickers)**
+
+- Number of non-missing PIT observations: 1,888,093
+- Mean(PIT) = 0.49854 (ideal = 0.5)
+- Var(PIT) = 0.083285 (ideal = 1/12 ≈ 0.083333)
+- Median(PIT) = 0.49972
+- Proportion of PIT in (0.49, 0.51) ≈ 2.04%
+
+These pooled diagnostics suggest the PITs are close to Uniform(0,1) on aggregate: mean and variance are very near the theoretical values, and the Q–Q diagnostics in Figure 1 confirm only modest deviations.
+
+
+
+![Figure 1 — Aggregate PIT histogram](figures/pit_hist.png){width=600px}
+
+*Figure 1: pooled PIT histogram over all tickers; the dashed line shows the uniform density.*
+
+![Figure 2 — PIT Q–Q plot vs Uniform](figures/pit_qq.png){width=600px}
+
+*Figure 2: PIT Q–Q plot (pooled) vs theoretical Uniform(0,1); empirical quantiles close to the 45° line.*
+
+![Figure 3 — Example ticker with Student‑t fit (PODD)](figures/PODD_fit_t.png){width=600px}
+
+*Figure 3: example ticker panel (returns histogram with fitted PDFs, Q–Q plots, and PIT histogram).* 
+
+![Figure 4 — Example ticker with Normal/t comparison (PODD)](figures/PODD_fit_normal.png){width=600px}
+
+*Figure 4: alternate example fit for comparison.*
+
+![Figure 5 — Example ticker with empirical fallback (GS)](figures/GS_fit_empirical.png){width=600px}
+
+*Figure 5: ticker where empirical (rank) marginal was used as fallback; shows empirical PIT behavior.*
+
+
+- The near-universal selection of Student‑t marginals and the low estimated degrees-of-freedom motivate the use of a t‑copula (or other tail-dependent copulas) when modeling joint behavior since heavy marginal tails increase the likelihood of joint extremes.
+- The small number of empirical fallbacks indicates the parametric candidate set (Normal, t) is adequate for almost all tickers; where empirical fits occur, they should be inspected individually and may reflect micro-capillars, short histories, or data issues.
+- PIT diagnostics are satisfactory in aggregate but remain useful at the ticker level: non-uniform PITs for individual tickers can bias copula estimation and should be handled (e.g., longer windows, smoothed CDFs, or explicit nonparametric marginals) if problematic.
+
+
 ### 3.2 Copula Fitting Results
 
 The following are the copula fitting results at each refitting date:
