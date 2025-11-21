@@ -219,9 +219,36 @@ Steps to simulate portfolio returns using Student-t copula:
 6. Repeat steps 1-5 for $N$ simulations to obtain $N$ scenarios of portfolio returns.
 
 
-### 2.5 VaR Estimation
+### 2.5 VaR estimation
 
-### 2.6 Benchmark and Backtesting
+We work with an equally-weighted portfolio of all S&P 500 constituents. For each refit date we have a 10-day simulation horizon and 1,000 simulated paths. On a given horizon day *h* and simulation path *i*, we first compute the portfolio log return as the simple average of the simulated log-returns of all assets in that path and day. Collecting these portfolio returns across the 1,000 paths gives an empirical distribution of portfolio returns for that horizon day.
+
+The 1-day 99% VaR for horizon day *h* is then defined as the 1st percentile of that empirical distribution (i.e. the 1% quantile of simulated portfolio returns for that day). Applying the same procedure to the copula-based simulations and to the independent-returns simulations gives two VaR series:
+
+- VaR_copula,t : 1-day 99% VaR from the copula model  
+- VaR_indep,t : 1-day 99% VaR from the independent-returns benchmark  
+
+By construction both VaR series are negative numbers and can be interpreted as 1-day portfolio losses at the 99% confidence level.
+
+### 2.6 Backtesting and Basel traffic-light framework
+
+To assess the accuracy of the VaR forecasts, we backtest both models against realised portfolio returns. For each trading day *t*, we align the VaR forecast from day *t-1* with the realised equal-weighted portfolio return on day *t*. A VaR exception (or “hit”) occurs when the realised loss exceeds the predicted VaR level. In other words:
+
+- hit_copula,t = 1 if realised return_t < VaR_copula,t-1, otherwise 0  
+- hit_indep,t  = 1 if realised return_t < VaR_indep,t-1, otherwise 0  
+
+We then evaluate the models using the Basel traffic-light framework for 99% VaR. Over a 250-day window, we count the number of exceptions
+
+N = sum of hits over the last 250 days
+
+and map N into a colour zone:
+
+- **Green** if N ≤ 4  
+- **Yellow** if 5 ≤ N ≤ 9  
+- **Red** if N ≥ 10  
+
+This procedure is applied to both the copula-based VaR and the independent-returns VaR so that we can compare their backtesting performance under the same Basel traffic-light rule.
+
 
 ## 3. Results
 
