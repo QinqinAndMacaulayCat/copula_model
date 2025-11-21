@@ -26,6 +26,121 @@ We downloaded stock prices from yahoo finance and transformed to lognormal retur
 
 ### 2.2 Marginal Distribution Modeling
 
+For each stock's daily log-returns, fit candidate univariate distributions (Normal / Student‑t / Empirical), select the best one with information criteria and goodness-of-fit tests, and transform series using the Probability Integral Transform (PIT) to obtain Uniform(0,1) margins.
+
+#### 2.2.1 Univariate Normal Distribution
+We treat the Normal (Gaussian) distribution as a parametric candidate with location parameter \(\mu\) and scale parameter \(\sigma>0\). The probability density function (pdf) is
+
+$$
+f(x;\mu,\sigma)=\frac{1}{\sigma\sqrt{2\pi}}\exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right),
+$$
+
+and the cumulative distribution function (CDF) is the standard Normal CDF shifted and scaled:
+
+$$
+F(x;\mu,\sigma)=\Phi\left(\frac{x-\mu}{\sigma}\right).
+$$
+
+For independent observations \(x_1,\dots,x_n\) the log-likelihood is
+
+$$
+\ell(\mu,\sigma)=\sum_{i=1}^n \ln f(x_i;\mu,\sigma) = -\frac{n}{2}\ln(2\pi)-n\ln\sigma -\frac{1}{2\sigma^2}\sum_{i=1}^n (x_i-\mu)^2.
+$$
+
+The MLEs are closed-form:
+
+$$
+\hat{\mu}=\bar{x}=\frac{1}{n}\sum_{i=1}^n x_i,\qquad \hat{\sigma}^2=\frac{1}{n}\sum_{i=1}^n (x_i-\bar{x})^2.
+$$
+
+We transform observed returns to PIT (Uniform(0,1)) via the fitted CDF:
+
+$$
+U_i=F(x_i;\hat{\mu},\hat{\sigma})=\Phi\left(\frac{x_i-\hat{\mu}}{\hat{\sigma}}\right).
+$$
+
+In practice we clip PIT values to \((\varepsilon,1-\varepsilon)\) with a small \(\varepsilon\) (here \(10^{-6}\)) to avoid exact 0 or 1 that would cause numerical issues when inverting marginals during simulation.
+#### 2.2.2 Univariate t-Distribution
+The univariate Student‑t distribution with degrees of freedom \(\nu>0\), location \(\mu\) and scale \(\sigma>0\) has pdf
+
+$$
+f(x;\nu,\mu,\sigma)=\frac{\Gamma\left(\frac{\nu+1}{2}\right)}{\Gamma\left(\frac{\nu}{2}\right)\sqrt{\nu\pi}\,\sigma}\left(1+\frac{1}{\nu}\left(\frac{x-\mu}{\sigma}\right)^2\right)^{-\frac{\nu+1}{2}}.
+$$
+
+Its heavier tails (relative to the Normal) are controlled by \(\nu\); as \(\nu\to\infty\) the t distribution converges to the Normal. There is no simple closed-form MLE for all parameters simultaneously; numerical MLE (e.g. `scipy.stats.t.fit`) is used to obtain \(\hat{\nu},\hat{\mu},\hat{\sigma}\). The log-likelihood is
+
+$$
+\ell(\nu,\mu,\sigma)=\sum_{i=1}^n \ln f(x_i;\nu,\mu,\sigma).
+$$
+
+We obtain PIT values via the fitted t CDF:
+
+$$
+U_i=F_{t,\hat{\nu}}\left(\frac{x_i-\hat{\mu}}{\hat{\sigma}}\right)
+$$
+
+and apply the same clipping \((\varepsilon,1-\varepsilon)\) as above. In model selection the t candidate is preferred when information criteria (AIC/BIC) favor it or when diagnostics indicate heavy tails (small estimated \(\hat{\nu}\)) that materially improve fit.
+#### 2.2.3 Univariate Empirical Distribution
+The empirical (nonparametric) CDF for a sample \(\{x_1,\dots,x_n\}\) is the empirical distribution function (ECDF)
+
+$$
+\hat{F}_n(x)=\frac{1}{n}\sum_{i=1}^n \mathbf{1}\{x_i\le x\}.
+$$
+
+To construct PIT values that avoid exact 0 and 1 we use a plotting-position formula. If \(r_i\) is the rank of \(x_i\) (1 = smallest), the plotting-position PIT is
+
+$$
+U_i=\frac{r_i-\tfrac{1}{2}}{n}.
+$$
+
+This rank-based transform preserves the empirical tail behavior without imposing a parametric shape and is used when both parametric candidates are deemed inadequate by GOF diagnostics. As above, values are clipped to \((\varepsilon,1-\varepsilon)\) prior to copula estimation and simulation.
+#### 2.2.4 Selecting the Best Fit
+Selecting the best marginal per ticker combines likelihood‑based information criteria, distributional goodness-of-fit tests, and practical heuristics. The formal elements are:
+
+- Information criteria
+  - Akaike Information Criterion (AIC):
+
+  $$
+  \mathrm{AIC}=2k-2\ell(\hat{\theta}),
+  $$
+
+  where \(k\) is the number of estimated parameters and \(\ell(\hat{\theta})\) is the maximized log-likelihood. AIC estimates out-of-sample KL divergence (up to an additive constant) and penalizes model complexity linearly in \(k\).
+
+  - Bayesian Information Criterion (BIC):
+
+  $$
+  \mathrm{BIC}=k\ln n - 2\ell(\hat{\theta}),
+  $$
+
+  where \(n\) is the sample size. BIC penalizes complexity more strongly for larger samples and is consistent (selects the true model with probability →1 when the true model is among candidates and n→∞).
+
+  We compute both criteria for each parametric candidate and prefer models with lower AIC and/or BIC. In implementation we compare combined evidence (for robustness) but either criterion may be decisive depending on sample size.
+
+- Goodness-of-fit (GOF) tests
+  - Kolmogorov–Smirnov (KS) statistic: for fitted CDF \(F\) and empirical CDF \(\hat{F}_n\),
+
+  $$
+  D_n=\sup_x |\hat{F}_n(x)-F(x)|.
+  $$
+
+  The KS test assesses maximum deviation; small p-values indicate the parametric CDF is unlikely to have generated the data.
+
+  - Cramér–von Mises (CvM) statistic: an L2 measure of discrepancy,
+
+  $$
+  W_n= n\int (\hat{F}_n(x)-F(x))^2\,dF(x),
+  $$
+
+  which is more sensitive to deviations across the whole support (including tails) than the KS statistic.
+
+  We compute p-values for both tests under the fitted null. If both parametric candidates are strongly rejected (p-values below a chosen threshold such as 0.05), we prefer the empirical marginal.
+
+- Practical heuristics and safeguards
+  - Minimum sample size: extremely short series are skipped because parameter estimates and test statistics are unreliable.
+  - Tail bias toward Student‑t: when the estimated degrees-of-freedom \(\hat{\nu}\) for the t-distribution is small (indicating heavy tails) we may prefer t even when information criteria differences are modest.
+  - Numerical guards: enforce lower bounds on scale parameters and on \(\nu\) to avoid degenerate fits and ensure finite variance where required.
+
+Operationally, the routine `run_fitting` computes log-likelihoods, AIC, BIC, KS and CvM p-values for the Normal and t candidates, and falls back to the empirical PIT when both parametric fits are rejected. The chosen model and parameter estimates are recorded in `best_table`; the per-ticker PITs (Uniform(0,1)) are collected into `pit_df`, and these objects are used as inputs for copula parameter estimation and simulation.
 ### 2.3 Fitting Copulas to Data
 
 #### 2.3.1 Gaussian Copula
