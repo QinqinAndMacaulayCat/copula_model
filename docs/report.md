@@ -29,7 +29,8 @@ We downloaded stock prices from yahoo finance and transformed to lognormal retur
 For each stock's daily log-returns, fit candidate univariate distributions (Normal / Student‑t / Empirical), select the best one with information criteria and goodness-of-fit tests, and transform series using the Probability Integral Transform (PIT) to obtain Uniform(0,1) margins.
 
 #### 2.2.1 Univariate Normal Distribution
-We treat the Normal (Gaussian) distribution as a parametric candidate with location parameter \(\mu\) and scale parameter \(\sigma>0\). The probability density function (pdf) is
+
+We treat the Normal (Gaussian) distribution as a parametric candidate with location parameter $\mu$ and scale parameter $\sigma>0$. The probability density function (pdf) is
 
 $$
 f(x;\mu,\sigma)=\frac{1}{\sigma\sqrt{2\pi}}\exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right),
@@ -41,7 +42,7 @@ $$
 F(x;\mu,\sigma)=\Phi\left(\frac{x-\mu}{\sigma}\right).
 $$
 
-For independent observations \(x_1,\dots,x_n\) the log-likelihood is
+For independent observations $x_1,\dots,x_n$ the log-likelihood is
 
 $$
 \ell(\mu,\sigma)=\sum_{i=1}^n \ln f(x_i;\mu,\sigma) = -\frac{n}{2}\ln(2\pi)-n\ln\sigma -\frac{1}{2\sigma^2}\sum_{i=1}^n (x_i-\mu)^2.
@@ -59,15 +60,17 @@ $$
 U_i=F(x_i;\hat{\mu},\hat{\sigma})=\Phi\left(\frac{x_i-\hat{\mu}}{\hat{\sigma}}\right).
 $$
 
-In practice we clip PIT values to \((\varepsilon,1-\varepsilon)\) with a small \(\varepsilon\) (here \(10^{-6}\)) to avoid exact 0 or 1 that would cause numerical issues when inverting marginals during simulation.
+In practice we clip PIT values to $(\varepsilon,1-\varepsilon)$ with a small $\varepsilon$ (here $10^{-6}$) to avoid exact 0 or 1 that would cause numerical issues when inverting marginals during simulation.
+
 #### 2.2.2 Univariate t-Distribution
-The univariate Student‑t distribution with degrees of freedom \(\nu>0\), location \(\mu\) and scale \(\sigma>0\) has pdf
+
+The univariate Student‑t distribution with degrees of freedom $\nu>0$, location $\mu$ and scale $\sigma>0$ has pdf
 
 $$
 f(x;\nu,\mu,\sigma)=\frac{\Gamma\left(\frac{\nu+1}{2}\right)}{\Gamma\left(\frac{\nu}{2}\right)\sqrt{\nu\pi}\,\sigma}\left(1+\frac{1}{\nu}\left(\frac{x-\mu}{\sigma}\right)^2\right)^{-\frac{\nu+1}{2}}.
 $$
 
-Its heavier tails (relative to the Normal) are controlled by \(\nu\); as \(\nu\to\infty\) the t distribution converges to the Normal. There is no simple closed-form MLE for all parameters simultaneously; numerical MLE (e.g. `scipy.stats.t.fit`) is used to obtain \(\hat{\nu},\hat{\mu},\hat{\sigma}\). The log-likelihood is
+Its heavier tails (relative to the Normal) are controlled by $\nu$; as $\nu\to\infty$ the t distribution converges to the Normal. There is no simple closed-form MLE for all parameters simultaneously; numerical MLE (e.g. `scipy.stats.t.fit`) is used to obtain $\hat{\nu},\hat{\mu},\hat{\sigma}$. The log-likelihood is
 
 $$
 \ell(\nu,\mu,\sigma)=\sum_{i=1}^n \ln f(x_i;\nu,\mu,\sigma).
@@ -79,22 +82,26 @@ $$
 U_i=F_{t,\hat{\nu}}\left(\frac{x_i-\hat{\mu}}{\hat{\sigma}}\right)
 $$
 
-and apply the same clipping \((\varepsilon,1-\varepsilon)\) as above. In model selection the t candidate is preferred when information criteria (AIC/BIC) favor it or when diagnostics indicate heavy tails (small estimated \(\hat{\nu}\)) that materially improve fit.
+and apply the same clipping $(\varepsilon,1-\varepsilon)$ as above. In model selection the t candidate is preferred when information criteria (AIC/BIC) favor it or when diagnostics indicate heavy tails (small estimated $\hat{\nu}$) that materially improve fit.
+
 #### 2.2.3 Univariate Empirical Distribution
-The empirical (nonparametric) CDF for a sample \(\{x_1,\dots,x_n\}\) is the empirical distribution function (ECDF)
+
+The empirical (nonparametric) CDF for a sample $\{x_1,\dots,x_n\}$ is the empirical distribution function (ECDF)
 
 $$
 \hat{F}_n(x)=\frac{1}{n}\sum_{i=1}^n \mathbf{1}\{x_i\le x\}.
 $$
 
-To construct PIT values that avoid exact 0 and 1 we use a plotting-position formula. If \(r_i\) is the rank of \(x_i\) (1 = smallest), the plotting-position PIT is
+To construct PIT values that avoid exact 0 and 1 we use a plotting-position formula. If $r_i$ is the rank of $x_i$ (1 = smallest), the plotting-position PIT is
 
 $$
 U_i=\frac{r_i-\tfrac{1}{2}}{n}.
 $$
 
-This rank-based transform preserves the empirical tail behavior without imposing a parametric shape and is used when both parametric candidates are deemed inadequate by GOF diagnostics. As above, values are clipped to \((\varepsilon,1-\varepsilon)\) prior to copula estimation and simulation.
+This rank-based transform preserves the empirical tail behavior without imposing a parametric shape and is used when both parametric candidates are deemed inadequate by GOF diagnostics. As above, values are clipped to $(\varepsilon,1-\varepsilon)$ prior to copula estimation and simulation.
+
 #### 2.2.4 Selecting the Best Fit
+
 Selecting the best marginal per ticker combines likelihood‑based information criteria, distributional goodness-of-fit tests, and practical heuristics. The formal elements are:
 
 - Information criteria
@@ -104,7 +111,7 @@ Selecting the best marginal per ticker combines likelihood‑based information c
   \mathrm{AIC}=2k-2\ell(\hat{\theta}),
   $$
 
-  where \(k\) is the number of estimated parameters and \(\ell(\hat{\theta})\) is the maximized log-likelihood. AIC estimates out-of-sample KL divergence (up to an additive constant) and penalizes model complexity linearly in \(k\).
+  where $k$ is the number of estimated parameters and $\ell(\hat{\theta})$ is the maximized log-likelihood. AIC estimates out-of-sample KL divergence (up to an additive constant) and penalizes model complexity linearly in $k$.
 
   - Bayesian Information Criterion (BIC):
 
@@ -112,12 +119,12 @@ Selecting the best marginal per ticker combines likelihood‑based information c
   \mathrm{BIC}=k\ln n - 2\ell(\hat{\theta}),
   $$
 
-  where \(n\) is the sample size. BIC penalizes complexity more strongly for larger samples and is consistent (selects the true model with probability →1 when the true model is among candidates and n→∞).
+  where $n$ is the sample size. BIC penalizes complexity more strongly for larger samples and is consistent (selects the true model with probability →1 when the true model is among candidates and $n \to \infty$).
 
   We compute both criteria for each parametric candidate and prefer models with lower AIC and/or BIC. In implementation we compare combined evidence (for robustness) but either criterion may be decisive depending on sample size.
 
 - Goodness-of-fit (GOF) tests
-  - Kolmogorov–Smirnov (KS) statistic: for fitted CDF \(F\) and empirical CDF \(\hat{F}_n\),
+  - Kolmogorov–Smirnov (KS) statistic: for fitted CDF $F$ and empirical CDF $\hat{F}_n$,
 
   $$
   D_n=\sup_x |\hat{F}_n(x)-F(x)|.
@@ -137,10 +144,11 @@ Selecting the best marginal per ticker combines likelihood‑based information c
 
 - Practical heuristics and safeguards
   - Minimum sample size: extremely short series are skipped because parameter estimates and test statistics are unreliable.
-  - Tail bias toward Student‑t: when the estimated degrees-of-freedom \(\hat{\nu}\) for the t-distribution is small (indicating heavy tails) we may prefer t even when information criteria differences are modest.
-  - Numerical guards: enforce lower bounds on scale parameters and on \(\nu\) to avoid degenerate fits and ensure finite variance where required.
+  - Tail bias toward Student‑t: when the estimated degrees-of-freedom $\hat{\nu}$ for the t-distribution is small (indicating heavy tails) we may prefer t even when information criteria differences are modest.
+  - Numerical guards: enforce lower bounds on scale parameters and on $\nu$ to avoid degenerate fits and ensure finite variance where required.
 
 Operationally, the routine `run_fitting` computes log-likelihoods, AIC, BIC, KS and CvM p-values for the Normal and t candidates, and falls back to the empirical PIT when both parametric fits are rejected. The chosen model and parameter estimates are recorded in `best_table`; the per-ticker PITs (Uniform(0,1)) are collected into `pit_df`, and these objects are used as inputs for copula parameter estimation and simulation.
+
 ### 2.3 Fitting Copulas to Data
 
 #### 2.3.1 Gaussian Copula
@@ -184,6 +192,7 @@ ln L(\nu; \Sigma, \hat{U}_1, \hat{U}_2, \dots, \hat{U}_n) = \sum_{t=1}^{n} \ln g
 $$
 
 Where,
+
 - $\hat{U}_{t} = (U_{t, 1}, U_{t, 2}, \dots, U_{t, d}) = (\hat{F}_1(X_{t, 1}), \hat{F}_2(X_{t, 2}), \dots, \hat{F}_d(X_{t, d}))$ are the pseudo-observations.
 - $t_{\nu}^{-1}$ is the inverse CDF of the univariate t distribution with $\nu$ degrees of freedom.
 - $g_{\nu, \Sigma}$ is the joint density of a random vector with $t_d(\nu, 0, \Sigma)$ distribution.
@@ -243,9 +252,9 @@ N = sum of hits over the last 250 days
 
 and map N into a colour zone:
 
-- **Green** if N ≤ 4  
-- **Yellow** if 5 ≤ N ≤ 9  
-- **Red** if N ≥ 10  
+- **Green** if N $\leq$ 4  
+- **Yellow** if 5 $\leq$ N $\leq$ 9  
+- **Red** if N $\geq$ 10  
 
 This procedure is applied to both the copula-based VaR and the independent-returns VaR so that we can compare their backtesting performance under the same Basel traffic-light rule.
 
@@ -272,19 +281,19 @@ The vast majority of tickers (498 of 502) were best fit by a Student‑t margina
 
 **Parameter summary (Student‑t)**
 
-- Degrees of freedom (\(\nu\)): mean = 3.3591, std = 0.3779, min = 2.01, median = 3.3491, max = 5.1234.
-- Location (t_loc): mean ≈ 0.0007941 (daily), typical values near zero.
-- Scale (t_scale): mean ≈ 0.01257 (daily volatility scale).
+- Degrees of freedom ($\nu$): mean = 3.3591, std = 0.3779, min = 2.01, median = 3.3491, max = 5.1234.
+- Location (t_loc): mean $\approx$ 0.0007941 (daily), typical values near zero.
+- Scale (t_scale): mean $\approx$ 0.01257 (daily volatility scale).
 
-The small estimated degrees-of-freedom (median ≈ 3.35) indicate pronounced heavy tails in marginal return distributions, which explains the systematic preference for Student‑t marginals over Gaussian.
+The small estimated degrees-of-freedom (median $\approx$ 3.35) indicate pronounced heavy tails in marginal return distributions, which explains the systematic preference for Student‑t marginals over Gaussian.
 
 **PIT diagnostics (pooled across tickers)**
 
 - Number of non-missing PIT observations: 1,888,093
 - Mean(PIT) = 0.49854 (ideal = 0.5)
-- Var(PIT) = 0.083285 (ideal = 1/12 ≈ 0.083333)
+- Var(PIT) = 0.083285 (ideal = 1/12 $\approx$ 0.083333)
 - Median(PIT) = 0.49972
-- Proportion of PIT in (0.49, 0.51) ≈ 2.04%
+- Proportion of PIT in (0.49, 0.51) $\approx$ 2.04%
 
 These pooled diagnostics suggest the PITs are close to Uniform(0,1) on aggregate: mean and variance are very near the theoretical values, and the Q–Q diagnostics in Figure 1 confirm only modest deviations.
 
@@ -419,15 +428,15 @@ fitting date: 2025-01-21 00:00:00,
 
 ### 3.4 VaR Estimates
 
-We estimate 1-day 99% portfolio VaR for both the copula-based model and an independent-returns benchmark over 1,462 trading days from 2020-01-08 to 2025-01-21. For each refit date, we simulate multi-asset return paths, form an equally-weighted portfolio of the S&P 500 constituents, and take the 1% quantile of simulated portfolio returns as the VaR estimate. This produces two daily VaR series, denoted \( \mathrm{VaR}_t^{\text{copula}} \) and \( \mathrm{VaR}_t^{\text{indep}} \).
+We estimate 1-day 99% portfolio VaR for both the copula-based model and an independent-returns benchmark over 1,462 trading days from 2020-01-08 to 2025-01-21. For each refit date, we simulate multi-asset return paths, form an equally-weighted portfolio of the S&P 500 constituents, and take the 1% quantile of simulated portfolio returns as the VaR estimate. This produces two daily VaR series, denoted $\mathrm{VaR}_t^{\text{copula}}$ and $\mathrm{VaR}_t^{\text{indep}}$.
 
-Over this sample, the level and distribution of the two VaR series differ sharply. The copula-based VaR is much more conservative, with an average 1-day VaR of about \(-3.16\%\) and a median of \(-3.15\%\); the 5th and 95th percentiles are roughly \(-3.98\%\) and \(-2.40\%\), and the most extreme values range from \(-5.21\%\) to \(-1.98\%\). By contrast, the independent-returns VaR is very tight around zero, with an average of about \(-0.20\%\), a median of \(-0.20\%\), and a 5–95% range of approximately \(-0.25\%\) to \(-0.13\%\). The difference \( \mathrm{VaR}_t^{\text{copula}} - \mathrm{VaR}_t^{\text{indep}} \) is always negative in our sample (mean ≈ \(-2.96\%\)), implying that on every day the copula model assigns a larger potential loss than the independent benchmark.
+Over this sample, the level and distribution of the two VaR series differ sharply. The copula-based VaR is much more conservative, with an average 1-day VaR of about $-3.16\%$ and a median of $-3.15\%$; the 5th and 95th percentiles are roughly $-3.98\%$ and $-2.40\%$, and the most extreme values range from $-5.21\%$ to $-1.98\%$. By contrast, the independent-returns VaR is very tight around zero, with an average of about $-0.20\%$, a median of $-0.20\%$, and a 5–95% range of approximately $-0.25\%$ to $-0.13\%$. The difference $\mathrm{VaR}_t^{\text{copula}} - \mathrm{VaR}_t^{\text{indep}}$ is always negative in our sample (mean $\approx$ $-2.96\%$), implying that on every day the copula model assigns a larger potential loss than the independent benchmark.
 
 These differences in VaR levels are consistent with the exception statistics discussed in the backtesting section. Using 99% VaR, the copula model generates 33 exceptions over 1,462 days (about 2.3%), which is only slightly above the nominal 1% rate. In contrast, the independent-returns VaR produces 549 exceptions (about 37.6%), indicating a severe underestimation of tail risk. Together, the VaR estimates and exception rates suggest that the copula-based model captures joint downside risk much more realistically than the independent-returns benchmark.
 
 
 ### 3.5 Backtesting Results
-To evaluate the out-of-sample performance of our 1-day 99% portfolio VaR, we apply the Basel traffic-light framework to simulated and historical returns. For each day we compare the realized equally-weighted S&P 500 portfolio return to two VaR models: a copula-based model that preserves the cross-sectional dependence across 503 assets, and a benchmark model that assumes assets are independent with the same marginal distributions. We then count “exceptions” – days when the realized loss is larger than the predicted 99% VaR – and classify 250-day windows into green (≤4 exceptions), yellow (5–9) and red (≥10) zones.
+To evaluate the out-of-sample performance of our 1-day 99% portfolio VaR, we apply the Basel traffic-light framework to simulated and historical returns. For each day we compare the realized equally-weighted S&P 500 portfolio return to two VaR models: a copula-based model that preserves the cross-sectional dependence across 503 assets, and a benchmark model that assumes assets are independent with the same marginal distributions. We then count “exceptions” – days when the realized loss is larger than the predicted 99% VaR – and classify 250-day windows into green ($\leq$ 4 exceptions), yellow (5–9) and red ($\geq$ 10) zones.
 
 Over the five non-overlapping 250-day blocks from January 2020 to January 2024, the independent model performs very poorly: each block records between roughly 75 and 118 exceptions, far above the Basel upper bound of 9, so the independent VaR is always in the red zone. This indicates that ignoring dependence leads to severe underestimation of portfolio tail risk. The copula model performs substantially better. In three of the five 250-day blocks it produces zero exceptions, placing those windows firmly in the green zone and implying that the VaR is conservative in “normal” periods. However, in two stress-heavy blocks the copula model still generates 20 and 10 exceptions respectively, which pushes those windows into the red zone and reveals that the fitted dependence structure does not fully capture extreme joint moves observed during turbulent markets.
 
