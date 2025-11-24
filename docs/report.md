@@ -180,7 +180,7 @@ Where $(F_i', F_j')$ is an independent copy of $(F_i, F_j)$.
 
 #### 2.3.2 t Copula
 
-The Gaussian copula is simple but may not capture tail dependencies well. The t copula can model stronger sysmetric tail dependence. In other words, t copula can capture heavier tails in both lower and upper tails.
+The Gaussian copula is simple but may not capture tail dependencies well. The t copula can model stronger symmetric tail dependence. In other words, t copula can capture heavier tails in both lower and upper tails.
 
 The correlation matrix for the t copula is estimated in the same way as the Gaussian copula using the Kendall's tau matrix.
 The degrees of freedom parameter $\nu$ can be estimated using maximum likelihood estimation (MLE) or method of moments based on the empirical data.
@@ -453,5 +453,5 @@ Aggregating over the entire backtest horizon (about 1,460 trading days from 2020
 
 # Note
 
-1. We referrenced text book - "Quantitative Risk Management: Concepts, Techniques and Tools" by Alexander J. McNeil, Rüdiger Frey, and Paul Embrechts for the methodology of copula modeling and VaR estimation.
+1. We referenced text book - "Quantitative Risk Management: Concepts, Techniques and Tools" by Alexander J. McNeil, Rüdiger Frey, and Paul Embrechts for the methodology of copula modeling and VaR estimation.
 2. The code is in the zip file. We did not put code here because it is too long.
