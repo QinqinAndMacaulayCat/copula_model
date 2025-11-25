@@ -451,7 +451,1202 @@ Over the five non-overlapping 250-day blocks from January 2020 to January 2024, 
 
 Aggregating over the entire backtest horizon (about 1,460 trading days from 2020-01-08 onward), the copula VaR records 33 breaches while the independent model records 549. Both models therefore fall into the red zone when viewed over the full sample, but the magnitude of improvement is clear: modeling dependence via a copula dramatically reduces, though does not eliminate, VaR violations. Overall, the backtest suggests that the copula-based approach is meaningfully more realistic than the independence benchmark and can provide useful risk estimates in typical market conditions, yet it remains vulnerable during extreme episodes, where additional features such as time-varying volatility, regime shifts or more flexible tail dependence would likely be needed to achieve regulatory-grade performance.
 
-# Note
+# Bibliography
 
-1. We referenced text book - "Quantitative Risk Management: Concepts, Techniques and Tools" by Alexander J. McNeil, Rüdiger Frey, and Paul Embrechts for the methodology of copula modeling and VaR estimation.
-2. The code is in the zip file. We did not put code here because it is too long.
+McNeil, A. J., Frey, R., & Embrechts, P. (2015). Quantitative risk management: Concepts, techniques and tools (Revised edition). Princeton University Press.
+
+
+# Appendix: Code Implementation
+## Import Libraries and Data Preprocessing
+
+```python
+
+#import necessary libraries
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import requests
+import argparse
+import time
+import multiprocessing
+import matplotlib.pyplot as plt
+from io import StringIO
+from scipy import stats
+from statsmodels.distributions.empirical_distribution import ECDF
+from pathlib import Path
+from typing import Dict, Tuple
+from scipy.stats import kendalltau, t, multivariate_t, multivariate_normal, norm
+from scipy.special import gammaln
+from scipy.optimize import minimize
+
+#data download and preprocessing
+def get_sp500_tickers():
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}).text
+    tbl = pd.read_html(StringIO(html))[0]
+    syms = (tbl["Symbol"].astype(str)
+                    .str.replace(".", "-", regex=False)
+                    .str.upper())
+    return sorted(syms.unique())
+
+tickers = get_sp500_tickers()
+
+raw = yf.download(
+    tickers=" ".join(tickers),
+    start=START_DATE,
+    end=END_DATE,
+    interval="1d",
+    auto_adjust=True,
+    group_by="ticker",
+    threads=True,
+    progress=False
+)
+
+if isinstance(raw.columns, pd.MultiIndex):
+    prices = raw.xs("Close", axis=1, level=-1)
+else:
+    col = "Close" if "Close" in raw.columns else raw.columns[0]
+    prices = raw[[col]].rename(columns={col: tickers[0]})
+
+prices = prices.sort_index().dropna(how="all")
+prices = prices.loc[:, prices.notna().sum() > 0]
+prices.to_csv("sp500_prices.csv", float_format="%.6f")
+
+logret = np.log(prices / prices.shift(1)).dropna(how="all")
+logret.to_csv("sp500_log_returns.csv", float_format="%.8f")
+```
+
+
+## Fitting Marginal Distributions
+
+```python
+def fit_normal(x: np.ndarray) -> Tuple[float, float]:
+    # MLE for normal equals sample mean/std (unbiased std is close; we use MLE style with ddof=0)
+    mu = np.mean(x)
+    sigma = np.std(x, ddof=0)
+    # guard against zero sigma
+    sigma = sigma if sigma > 1e-12 else 1e-12
+    return mu, sigma
+
+def fit_t(x: np.ndarray) -> Tuple[float, float, float]:
+    # scipy.stats.t.fit returns (df, loc, scale)
+    df, loc, scale = stats.t.fit(x)
+    # guard
+    if scale <= 1e-12:
+        scale = 1e-12
+    if df < 2.01:
+        df = 2.01  # ensure finite variance
+    return df, loc, scale
+
+def loglik_normal(x: np.ndarray, mu: float, sigma: float) -> float:
+    return np.sum(stats.norm.logpdf(x, loc=mu, scale=sigma))
+
+def loglik_t(x: np.ndarray, df: float, loc: float, scale: float) -> float:
+    return np.sum(stats.t.logpdf(x, df=df, loc=loc, scale=scale))
+
+def aic(loglik: float, k: int) -> float:
+    return 2*k - 2*loglik
+
+def bic(loglik: float, k: int, n: int) -> float:
+    return k*np.log(n) - 2*loglik
+
+def gof_pvalues(x: np.ndarray, cdf_callable) -> Tuple[float, float]:
+    # KS test with fitted CDF
+    ks_stat, ks_p = stats.kstest(x, cdf_callable)
+    # Cramer–von Mises test
+    cvm_res = stats.cramervonmises(x, cdf_callable)
+    cvm_p = getattr(cvm_res, 'pvalue', np.nan)
+    return ks_p, cvm_p
+
+def empirical_pit(x: np.ndarray) -> np.ndarray:
+    # Plotting position (rank - 0.5)/n to avoid 0/1
+    order = np.argsort(x)
+    ranks = np.empty_like(order)
+    ranks[order] = np.arange(1, len(x)+1)
+    u = (ranks - 0.5)/len(x)
+    return u
+
+def run_fitting(returns: pd.DataFrame):
+    """Fit marginals for each column in returns and produce PIT DataFrame and best_table.
+
+    Returns:
+        pit_df (pd.DataFrame): uniform PIT series per ticker (aligned to returns.index)
+        best_table (pd.DataFrame): per-ticker model info and parameters
+    """
+    best_rows = []
+    # collect per-column PIT Series and concat at the end to avoid frame fragmentation
+    col_series = []
+    for col in returns.columns:
+        x = returns[col].dropna().values
+        n = len(x)
+        if n < 20:
+            continue  # skip very short series
+
+        # Fit Normal
+        mu, sigma = fit_normal(x)
+        ll_norm = loglik_normal(x, mu, sigma)
+        aic_norm = aic(ll_norm, k=2)
+        bic_norm = bic(ll_norm, k=2, n=n)
+        norm_cdf = lambda s: stats.norm.cdf(s, loc=mu, scale=sigma)
+        ks_norm, cvm_norm = gof_pvalues(x, norm_cdf)
+
+        # Fit Student‑t
+        df_t, loc_t, scale_t = fit_t(x)
+        ll_t = loglik_t(x, df_t, loc_t, scale_t)
+        aic_t = aic(ll_t, k=3)
+        bic_t = bic(ll_t, k=3, n=n)
+        t_cdf = lambda s: stats.t.cdf(s, df=df_t, loc=loc_t, scale=scale_t)
+        ks_t, cvm_t = gof_pvalues(x, t_cdf)
+
+        # Select between Normal and t using information criteria first
+        choose_t = (aic_t + bic_t) < (aic_norm + bic_norm)
+        # bias towards t if very heavy tails
+        if df_t < 10 and (abs(aic_t - aic_norm) + abs(bic_t - bic_norm)) < 10:
+            choose_t = True
+
+        # If both tests reject badly for both, use Empirical
+        both_bad = ( (ks_norm < 0.05 and cvm_norm < 0.05) and (ks_t < 0.05 and cvm_t < 0.05) )
+
+        if both_bad:
+            best = 'empirical'
+            params = {}
+            # PIT via empirical ranks (aligned to original index)
+            series = returns[col].dropna()
+            u = pd.Series(empirical_pit(series.values), index=series.index)
+        else:
+            if choose_t:
+                best = 't'
+                params = {'df': df_t, 'loc': loc_t, 'scale': scale_t}
+                series = returns[col].dropna()
+                u = pd.Series(stats.t.cdf(series.values, df=df_t, loc=loc_t, scale=scale_t), index=series.index)
+            else:
+                best = 'normal'
+                params = {'mu': mu, 'sigma': sigma}
+                series = returns[col].dropna()
+                u = pd.Series(stats.norm.cdf(series.values, loc=mu, scale=sigma), index=series.index)
+
+        # Clip to (1e-6, 1-1e-6) to avoid exact 0/1
+        u = u.clip(1e-6, 1-1e-6)
+        # append the Series (keeps its index); will concat later
+        col_series.append(u.rename(col))
+
+        best_rows.append({
+            'ticker': col,
+            'n': n,
+            'best_model': best,
+            'mu': params.get('mu', np.nan),
+            'sigma': params.get('sigma', np.nan),
+            't_df': params.get('df', np.nan),
+            't_loc': params.get('loc', np.nan),
+            't_scale': params.get('scale', np.nan),
+            'll_norm': ll_norm,
+            'aic_norm': aic_norm,
+            'bic_norm': bic_norm,
+            'ks_p_norm': ks_norm,
+            'cvm_p_norm': cvm_norm,
+            'll_t': ll_t,
+            'aic_t': aic_t,
+            'bic_t': bic_t,
+            'ks_p_t': ks_t,
+            'cvm_p_t': cvm_t
+        })
+
+    # build pit_df by concatenating per-column Series (this is fast and avoids fragmentation)
+    if col_series:
+        pit_df = pd.concat(col_series, axis=1)
+        # ensure we have the original full index (missing values remain NaN)
+        pit_df = pit_df.reindex(index=returns.index)
+    else:
+        pit_df = pd.DataFrame(index=returns.index)
+
+    best_table = pd.DataFrame(best_rows).set_index('ticker').sort_values(['best_model','n'], ascending=[True, False])
+
+    return pit_df, best_table
+
+def main_distr_fitting(returns, save: bool = True, out_dir: Path = None, use_parquet: bool = False, best_output: Path = None):
+    """Load returns from path, run fitting, and optionally save/print PIT DataFrame and best_table.
+
+    Args:
+        returns: pd.DataFrame of returns data.
+        save: whether to save outputs to disk.
+        out_dir: directory to save outputs (defaults to input parent).
+        use_parquet: if True try to save PIT as parquet (pyarrow required).
+        best_output: explicit path for best_table CSV (overrides out_dir).
+
+    Returns:
+        pit_df, best_table
+    """
+    pit_df, best_table = run_fitting(returns)
+
+    if save:
+        out_dir = Path(out_dir) if out_dir is not None else path.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # save PIT
+        pit_path = out_dir / 'pit_uniform.parquet' if use_parquet else out_dir / 'pit_uniform.csv.gz'
+        try:
+            if use_parquet:
+                pit_df.to_parquet(pit_path)
+            else:
+                pit_df.to_csv(pit_path, compression='gzip')
+        except Exception as e:
+            # fallback to csv if parquet failed
+            if use_parquet:
+                pit_path = out_dir / 'pit_uniform.csv.gz'
+                pit_df.to_csv(pit_path, compression='gzip')
+            else:
+                raise
+
+        # save best_table
+        if best_output is None:
+            best_path = out_dir / 'best_marginals.csv'
+        else:
+            best_path = Path(best_output)
+            best_path.parent.mkdir(parents=True, exist_ok=True)
+        best_table.to_csv(best_path)
+
+    return pit_df, best_table
+
+def inverse_gaussian(u: np.array, mu: float, sigma: float):
+    return norm.ppf(u, loc=mu, scale=sigma)
+
+def inverse_t(u: np.array, nu: float, mu: float = 0, sigma: float = 1):
+    return t.ppf(u, df=nu, loc=mu, scale=sigma)
+
+def inverse_empirical(u: np.array, data: np.array):
+    """
+    Inverse empirical CDF using linear interpolation.
+    Parameters
+    ----------
+    u : np.array
+        Uniform variables in (0,1).
+    data : np.array
+        Original data to build empirical CDF.
+    Returns
+    -------
+    np.array
+        Transformed variables on original scale.
+    """
+    sorted_data = np.sort(data)
+    n = len(sorted_data)
+    ecdf_values = np.arange(1, n + 1) / n
+    return np.interp(u, ecdf_values, sorted_data)
+```
+
+## Fitting Copula Models
+
+```python
+
+def nearest_positive_definite_corr(matrix):
+    matrix = (matrix + matrix.T) / 2
+    eigvals, eigvecs = np.linalg.eigh(matrix)
+    eigvals_clipped = np.clip(eigvals, 1e-6, None)
+    clipped_matrix = eigvecs @ np.diag(eigvals_clipped) @ eigvecs.T
+    diag = np.sqrt(np.diag(clipped_matrix))
+    corr = clipped_matrix / np.outer(diag, diag)
+    np.fill_diagonal(corr, 1.0)
+    return corr
+
+def correlation_matrix(data: np.array) -> np.array:
+    """
+    Computes the correlation matrix from the given data.
+    Parameters
+    ----------
+    data : np.array
+        Input data of shape (n_samples, n_assets). Each column represents cdf values for an asset returns
+    Returns
+    -------
+    np.array
+        Correlation matrix of shape (n_assets, n_assets).
+    """
+    # Kendall's tau correlation
+    n_assets = data.shape[1]
+    corr_matrix = np.zeros((n_assets, n_assets))
+    for i in range(n_assets):
+        for j in range(n_assets):
+            if i == j:
+                corr_matrix[i, j] = 1.0
+            else:
+                tau, _ = kendalltau(data[:, i], data[:, j])
+                corr_matrix[i, j] = np.sin(np.pi / 2 * tau)
+
+    # If needed, ensure the correlation matrix is positive definite
+    corr_matrix = nearest_positive_definite_corr(corr_matrix)
+    return corr_matrix
+
+
+def log_likelihood_gaussian(corr_matrix: np.array,
+                            data: np.array
+                            ) -> float:
+    """
+    Computes the log-likelihood for the Gaussian copula.
+    Parameters
+    ----------
+    corr_matrix : np.array
+        Correlation matrix of shape (n_assets, n_assets).
+    data : np.array
+        Pseudo-observations of shape (n_samples, n_assets).
+    Returns
+    -------
+    float
+        Log-likelihood value.
+    """
+    x = norm.ppf(data)
+    mvn_logpdf = multivariate_normal.logpdf(x, mean=np.zeros(corr_matrix.shape[0]), cov=corr_matrix)
+    marginal_logpdf = norm.logpdf(x)
+    ll = np.sum(mvn_logpdf) - np.sum(marginal_logpdf)
+    return ll
+
+
+def log_likelihood_t(nu: float,
+                     corr_matrix: np.array,
+                     data: np.array
+                     ) -> float:
+    """
+    Computes the log-likelihood for the t copula.
+    Parameters
+    ----------
+    nu : float
+        Degrees of freedom for the t copula.
+    corr_matrix : np.array
+        Correlation matrix of shape (n_assets, n_assets).
+    data : np.array
+        Pseudo-observations of shape (n_samples, n_assets).
+    Returns
+    -------
+    float
+        Log-likelihood value.
+    """
+    x = t.ppf(data, df=nu)
+
+    # multivariate t density
+    mvn_logpdf = multivariate_t.logpdf(x, df=nu, shape=corr_matrix)
+
+    # marginal t densities
+    marginal_logpdf = t.logpdf(x, df=nu)
+
+    ll = np.sum(mvn_logpdf) - np.sum(marginal_logpdf)
+
+    return ll
+
+
+def fit_t_copula(data: np.array, 
+                 corr_matrix: np.array,
+                 initial_nu: float = 3.0
+                 ) -> float:    
+    """
+    Fits the t copula to the given data by estimating the degrees of freedom.
+    Parameters
+    ----------
+    data : np.array
+        Pseudo-observations of shape (n_samples, n_assets).
+    initial_nu : float
+        Initial guess for the degrees of freedom.
+    Returns
+    -------
+    float
+        Estimated degrees of freedom for the t copula.
+    """     
+    def neg_log_likelihood(nu):
+        return -log_likelihood_t(nu, corr_matrix, data)    
+    result = minimize(neg_log_likelihood, 
+                      x0=np.array([initial_nu]), 
+                      bounds=[(2.01, 30.0)],
+                      method='L-BFGS-B')
+    fitted_nu = result.x[0]
+    return fitted_nu
+
+
+def model_selection(data: np.array) -> tuple:
+    """
+    Selects the best copula model (Gaussian or t) based on AIC and BIC.
+    Parameters
+    ----------
+    data : np.array
+        Pseudo-observations of shape (n_samples, n_assets).
+    Returns
+    -------
+    tuple
+        (best_copula_name, correlation_matrix, fitted_nu)
+    """ 
+
+    t = time.time()
+    corr = correlation_matrix(data)
+    print(f"Correlation matrix computed in {time.time() - t} seconds")
+    t = time.time()
+    ll_gaussian = log_likelihood_gaussian(corr, data)
+    n_params_gaussian = data.shape[1] * (data.shape[1] - 1) // 2 + data.shape[1]
+    aic_gaussian = aic(ll_gaussian, n_params_gaussian)
+    bic_gaussian = bic(ll_gaussian, n_params_gaussian)
+    print(f"Gaussian log-likelihood computed in {time.time() - t} seconds")
+    t = time.time()
+
+    fitted_nu = fit_t_copula(data, corr)
+    print(f"t copula fitting computed in {time.time() - t} seconds")
+    t = time.time()
+    ll_t = log_likelihood_t(fitted_nu, corr, data)
+    n_params_t = n_params_gaussian + 1
+    aic_t = aic(ll_t, n_params_t)
+    bic_t = bic(ll_t, n_params_t)
+    print(f"t copula log-likelihood computed in {time.time() - t} seconds")
+
+    if aic_gaussian < aic_t and bic_gaussian < bic_t:
+        return ('gaussian', corr, None)
+    else:
+        return ('t', corr, fitted_nu)
+
+
+def generator_archimedean(theta: float,
+                          data: np.array,
+                          copula: str) -> np.array:
+    """
+    Computes the generator function for Archimedean copulas (Clayton, Gumbel, Frank).
+
+    Parameters
+    ----------
+    theta : float
+        Parameter for the Archimedean copula.       
+    data : np.array
+        Pseudo-observations of shape (n_samples, n_assets).
+    copula : str
+        Type of Archimedean copula ('clayton', 'gumbel', 'frank').
+    Returns
+    -------
+    np.array
+        The transformed data using the generator function. (n_samples, n_assets)
+
+    """
+    if copula == 'clayton':
+        return (data ** (-theta) - 1) / theta
+    elif copula == 'gumbel':
+        return (-np.log(data)) ** theta
+    elif copula == 'frank':
+        return -np.log((np.exp(-theta * data) - 1) / (np.exp(-theta) - 1))
+    else:
+        raise ValueError("Unsupported copula type. Choose from 'clayton', 'gumbel', 'frank'.")
+
+def Inverse_generator_archimedean(theta: float,
+                              t_values: np.array,
+                              copula: str) -> np.array:
+    """
+    Computes the inverse generator function for Archimedean copulas (Clayton, Gumbel, Frank).
+
+    Parameters
+    ----------
+    theta : float
+        Parameter for the Archimedean copula.
+    t_values : np.array
+        Transformed data using the generator function. (n_samples, n_assets).
+    copula : str
+        Type of Archimedean copula ('clayton', 'gumbel', 'frank').
+    Returns 
+    -------
+    np.array
+        The pseudo-observations of shape (n_samples, n_assets).
+    """
+    if copula == 'clayton':
+        return (1 + theta * t_values) ** (-1 / theta)
+    elif copula == 'gumbel':
+        return np.exp(-t_values ** (1 / theta))
+    elif copula == 'frank':
+        return - (1 / theta) * np.log(1 + np.exp(-t_values) * (np.exp(-theta) - 1))
+    else:
+        raise ValueError("Unsupported copula type. Choose from 'clayton', 'gumbel', 'frank'.")
+
+def diff_generator_archimedean(theta: float,
+                                    data: np.array,
+                                    copula: str
+                                    ) -> np.array:
+    """
+    Computes the differential of the generator function for Archimedean copulas (Clayton, Gumbel, Frank).
+    Parameters
+    ----------
+    theta : float
+        Parameter for the Archimedean copula.
+    data : np.array
+        Pseudo-observations of shape (n_samples, n_assets).
+    copula : str
+        Type of Archimedean copula ('clayton', 'gumbel', 'frank').
+    Returns
+    -------
+    np.array
+        The differential values of shape (n_samples, n_assets).
+    """
+    eps = 1e-6 
+    if copula == 'clayton':
+        return -(data ** (-theta - 1))
+    elif copula == 'gumbel':
+        log_data = np.clip(-np.log(data), eps, None)
+        return theta * log_data ** (theta - 1) / data
+    elif copula == 'frank':
+        exp_neg_theta = np.exp(-theta)
+        exp_neg_theta_data = np.exp(-theta * data)
+        return (theta * exp_neg_theta_data) / ( (exp_neg_theta_data - 1) * (exp_neg_theta - 1) )
+    else:
+        raise ValueError("Unsupported copula type. Choose from 'clayton', 'gumbel', 'frank'.")
+
+def log_likelihood_archimedean(theta: float, data: np.array, copula: str) -> float:
+    """
+    Log-likelihood for Archimedean Copulas using analytical forms.
+    """
+    n_samples, d = data.shape
+    phi_u = generator_archimedean(theta, data, copula)      # shape (n_samples, d)
+    sum_phi = np.sum(phi_u, axis=1)                         # shape (n_samples,)
+    log_phi_prime = np.sum(np.log(diff_generator_archimedean(theta, data, copula)), axis=1)
+
+    if copula == 'clayton':
+        
+        term1 = np.sum(np.log(theta + np.arange(1, d)))
+        term2 = -(1 / theta + d) * np.log(sum_phi)
+        log_c = term1 + term2 + log_phi_prime
+
+    elif copula == 'gumbel':
+        A = (-1) ** (d - 1)
+        term1 = np.log(A * theta ** (-d + 1)) + gammaln(d + 1)
+        log_sum_phi = np.log(sum_phi)
+        log_phi_d = term1 + (d - 1) * np.log(log_sum_phi) - sum_phi ** (1 / theta)
+        log_c = log_phi_d + log_phi_prime
+
+    elif copula == 'frank':
+        exp_neg_theta = np.exp(-theta)
+        exp_neg_sum_phi = np.exp(-sum_phi)
+        numerator = theta * exp_neg_sum_phi
+        denominator = (exp_neg_sum_phi - 1) * (exp_neg_theta - 1)
+        log_phi_d = np.log(numerator) - np.log(denominator)
+        log_c = log_phi_d + log_phi_prime
+
+    else:
+        raise ValueError("Unsupported copula.")
+
+    return np.sum(log_c)
+
+def main_copula(returns: pd.DataFrame,
+         train_days: int,
+         sim_days: int,
+         refit_freq: int,
+         n_paths: int,
+         random_state: int = None,
+         ) -> (dict, dict, dict):
+    
+    """
+    main function to fit copula model and simulate paths.
+    Parameters
+    ----------
+    returns : np.array
+        Historical return data for the assets with index as time and columns as assets.
+    fitted_distributions : dict
+        Dictionary of fitted marginal distributions for each asset. with keys as asset names and values as distribution objects.
+    train_days : int
+        Number of days to use for training the copula model.
+    sim_days : int
+        Number of days to simulate.
+    refit_freq : int
+        Number of days between refitting the copula model.
+    n_paths : int
+        Number of simulation paths.
+    random_state : int, optional
+        Random seed for reproducibility.    
+    Returns
+    -------
+    (all_simulated_paths, model_info, all_independent_paths) : (dict, dict, dict)
+        all_simulated_paths : dict
+            Dictionary with keys as fit date and values as simulated return paths (np.array) of shape (n_paths, sim_days, n_assets).
+        model_info : dict
+            Dictionary with keys as fit date and values as another dict containing:
+                'best_distributions' : pd.DataFrame
+                    DataFrame of best fitted distributions for each asset.
+                'copula_name' : str
+                    Name of the selected copula model.
+                'corr_matrix' : np.array
+                    Correlation matrix used in the copula model.
+                'nu' : float or None
+                    Degrees of freedom for t-copula, None for Gaussian copula.  
+
+        all_independent_paths : dict
+            Dictionary with keys as fit date and values as simulated return paths (np.array) from independent model of shape (n_paths, sim_days, n_assets).
+
+    """
+
+    model_info = {}
+    all_simulated_paths = {}
+    all_independent_paths = {}
+
+    total_iterations = (len(returns) - train_days) // refit_freq + 1
+
+    # Prepare arguments for parallel processing
+    args_list = []
+    for i in range(total_iterations):
+        start_idx = i * refit_freq
+        end_idx = start_idx + train_days
+        train_data = returns.iloc[start_idx:end_idx]
+        args_list.append((train_data, random_state, n_paths, returns.shape[1], sim_days))
+    # Use multiprocessing to parallelize the fitting and simulation
+    with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+        results = pool.starmap(one_load, args_list)
+    for i, (simulated_returns, independent_returns, best_table, copula_name, corr_mat, nu) in enumerate(results):
+        fit_date = returns.index[i * refit_freq + train_days - 1]
+        all_simulated_paths[fit_date] = simulated_returns
+        all_independent_paths[fit_date] = independent_returns
+        model_info[fit_date] = {
+            'best_distributions': best_table,
+            'copula_name': copula_name,
+            'corr_matrix': corr_mat,
+            'nu': nu
+        }
+
+    return all_simulated_paths, model_info, all_independent_paths
+
+
+def one_load(train_data: pd.DataFrame,
+             random_state: int,
+             n_paths: int,
+             n_assets: int,
+             sim_days: int):
+    time_start = time.time()
+    print("starting distribution fitting...")
+    # Fit distribution to each asset's returns
+    pit_df, best_table = main_distr_fitting(returns=train_data, 
+                    save=False,                   
+                    use_parquet=False,
+                    best_output=True)
+
+    print(f"Time elapsed: {time.time() - time_start} seconds")
+    time_start = time.time()
+
+    print("starting copula fitting...")
+    # select copula model and fit
+    empirical_cdf = pit_df.values
+    copula_name, corr_mat, copula_nu = model_selection(empirical_cdf)
+
+    print(f"Selected copula: {copula_name}")
+    print(f"time elapsed: {time.time() - time_start} seconds")
+    time_start = time.time()
+    
+    print("starting simulation...")
+
+    # Simulate paths
+    if copula_name == 'gaussian':
+        simulated_paths = simulate_gaussian_copula(n_paths=n_paths,
+                                                    corr_matrix=corr_mat,
+                                                    n_assets=n_assets,
+                                                    n_steps=sim_days,
+                                                    random_state=random_state)
+    elif copula_name == 't':
+        simulated_paths = simulate_t_copula(n_paths=n_paths,
+                                            df=copula_nu,
+                                            corr_matrix=corr_mat,
+                                            n_assets=n_assets,
+                                            n_steps=sim_days,
+                                            random_state=random_state)
+    else:
+        raise NotImplementedError(f"Copula model '{copula_name}' not implemented in simulation.")
+
+    # Simulate independent paths as a benchmark
+    independent_paths = simulate_independent(n_paths=n_paths,
+                                                n_assets=n_assets,
+                                                n_steps=sim_days,
+                                                random_state=random_state)
+
+    
+    print(f"time elapsed: {time.time() - time_start} seconds")
+    time_start = time.time()
+
+    print("starting inverse CDF transformation...")
+    # Transform simulated uniform variables back to original scale using inverse CDFs
+    simulated_returns = np.zeros_like(simulated_paths)
+    independent_returns = np.zeros_like(independent_paths)
+    for asset_idx, asset_name in enumerate(train_data.columns):
+
+        distr = best_table.loc[asset_name, 'best_model']
+
+        if distr == 'normal':
+            mu = best_table.loc[asset_name, 'mu']
+            sigma = best_table.loc[asset_name, 'sigma']
+            simulated_returns[:, :, asset_idx] = inverse_gaussian(simulated_paths[:, :, asset_idx], mu, sigma)
+            independent_returns[:, :, asset_idx] = inverse_gaussian(independent_paths[:, :, asset_idx], mu, sigma)
+        elif distr == 't':
+            nu = int(best_table.loc[asset_name, 't_df'])
+            mu = best_table.loc[asset_name, 't_loc']
+            sigma = best_table.loc[asset_name, 't_scale']
+            simulated_returns[:, :, asset_idx] = inverse_t(simulated_paths[:, :, asset_idx], nu, mu, sigma)
+            independent_returns[:, :, asset_idx] = inverse_t(independent_paths[:, :, asset_idx], nu, mu, sigma)
+
+        elif distr == 'empirical':
+            simulated_returns[:, :, asset_idx] = inverse_empirical(simulated_paths[:, :, asset_idx], train_data[asset_name].values)
+            independent_returns[:, :, asset_idx] = inverse_empirical(independent_paths[:, :, asset_idx], train_data[asset_name].values)
+        else:
+            raise NotImplementedError(f"Distribution '{distr}' not implemented in inverse CDF transformation.")
+
+
+    print(f"time elapsed: {time.time() - time_start} seconds")
+    time_start = time.time()
+
+    return simulated_returns, independent_returns, best_table, copula_name, corr_mat, copula_nu
+```
+
+## Monte Carlo Simulation Using Copulas
+
+```python
+def simulate_independent(n_paths: int,
+                         n_assets: int,
+                         n_steps: int,
+                         random_state: int = None
+                         ) -> np.array:
+    """
+    Simulates paths assuming independence among assets.
+    Parameters
+    ----------
+    n_paths : int
+        Number of simulation paths.
+    n_assets : int
+        Number of assets.
+    n_steps : int
+        Number of time steps.
+    Returns
+    -------
+    np.array
+        Simulated paths.
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    U = np.random.uniform(size=(n_paths, n_steps, n_assets))
+
+    return U
+
+def simulate_multivariate_normal(n_paths: int,
+                                    corr_matrix: np.array,
+                                    n_assets: int,
+                                    n_steps: int,
+                                    random_state: int = None
+                                    ) -> np.array:
+        """
+        Simulates paths using a multivariate normal distribution.
+        Parameters
+        ----------
+        n_paths : int
+            Number of simulation paths.
+        corr_matrix : np.array
+            Correlation matrix for the assets. Should be positive definite.
+        n_assets : int
+            Number of assets.
+        n_steps : int
+            Number of time steps.
+        Returns
+        -------
+        np.array
+            Simulated paths.
+        """
+        if random_state is not None:
+            np.random.seed(random_state)
+    
+        # Simulate independent standard normal variables
+        Z = np.random.normal(size=(n_paths, n_steps, n_assets))
+        
+        # Cholesky decomposition
+    
+        if np.all(np.linalg.eigvals(corr_matrix) > 0) is False:
+            raise ValueError("Correlation matrix must be positive definite.")
+    
+        L = np.linalg.cholesky(corr_matrix)
+    
+        # Multiply by the Cholesky factor to introduce correlation
+        X = np.einsum('mjk, kl -> mjl', Z, L.T) 
+    
+        return X
+
+
+def simulate_gaussian_copula(n_paths: int,
+                             corr_matrix: np.array,
+                             n_assets: int,
+                             n_steps: int,
+                             random_state: int = None
+                             ) -> np.array:
+    """
+    Simulates paths using a Gaussian copula.
+    Parameters
+    ----------
+    n_paths : int
+        Number of simulation paths.
+    delta_t : float
+        Time increment for each step.
+    corr_matrix : np.array
+        Correlation matrix for the assets. Should be positive definite.
+    n_assets : int
+        Number of assets.
+    n_steps : int
+        Number of time steps.
+    Returns
+    -------
+    np.array
+        Simulated paths.
+    """
+    X = simulate_multivariate_normal(n_paths,
+                                     corr_matrix,
+                                     n_assets,
+                                     n_steps,
+                                     random_state) 
+
+    # CDF transformation to uniform
+
+    U = norm.cdf(X)
+
+    return U
+
+
+def simulate_t_copula(n_paths: int,
+                     corr_matrix: np.array,
+                     n_assets: int,
+                     n_steps: int,
+                     df: int,
+                     random_state: int = None
+                     ) -> np.array:
+    """
+    Simulates paths using a t-copula.
+    Parameters
+    ----------
+    n_paths : int
+        Number of simulation paths.
+    delta_t : float
+        Time increment for each step.
+    corr_matrix : np.array
+        Correlation matrix for the assets. Should be positive definite.
+    n_assets : int
+        Number of assets.
+    n_steps : int
+        Number of time steps.
+    df : int
+        Degrees of freedom for the t-distribution.
+    Returns
+    -------
+    np.array
+        Simulated paths.
+    """
+
+    X = simulate_multivariate_normal(n_paths,
+                                     corr_matrix,
+                                     n_assets,
+                                     n_steps,
+                                     random_state)
+    # Scale by chi-squared distribution to get t-distribution
+    chi2_samples = np.random.chisquare(df, size=(n_paths, n_steps, 1))
+    X_t = X / np.sqrt(chi2_samples / df)
+
+    # CDF transformation to uniform
+    U = t.cdf(X_t, df=df)
+
+    return U
+
+
+def simulate_clayton_copula(n_paths: int,
+                            theta: float,
+                            n_assets: int,
+                            n_steps: int,
+                            random_state: int = None
+                            ) -> np.array:
+    """
+    Simulates paths using a Clayton copula.
+    Parameters
+    ----------
+    n_paths : int
+        Number of simulation paths.
+    theta : float
+        Parameter for the Clayton copula (theta > 0).
+    n_assets : int
+        Number of assets.
+    n_steps : int
+        Number of time steps.
+    Returns
+    -------
+    np.array
+        Simulated paths.
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    V = np.random.gamma(1/theta, 1, size=(n_paths, n_steps, 1))
+    X = np.random.uniform(size=(n_paths, n_steps, n_assets))
+    U = (1 - np.log(X) / V) ** (-1/theta)
+
+    return U
+
+
+def simulate_gumbel_copula(n_paths: int,
+                           theta: float,
+                           n_assets: int,
+                           n_steps: int,
+                           random_state: int = None
+                           ) -> np.array:
+    """
+    Simulates paths using a Gumbel copula.
+    Parameters
+    ----------
+    n_paths : int
+        Number of simulation paths.
+    theta : float
+        Parameter for the Gumbel copula (theta >= 1).
+    n_assets : int
+        Number of assets.
+    n_steps : int
+        Number of time steps.
+    Returns
+    -------
+    np.array
+        Simulated paths.
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    alpha = 1 / theta
+    beta = 1
+    gamma = (np.cos(np.pi / (2 * theta))) ** theta
+
+    # Simulate stable variables
+    V = levy_stable.rvs(alpha=alpha, beta=beta, scale=gamma, loc=0,
+                        size=(n_paths, n_steps, 1),
+                        random_state=random_state)
+    X = np.random.uniform(size=(n_paths, n_steps, n_assets))
+
+    U = np.exp(-(-np.log(X) / V) ** (1 / theta))
+
+    return U
+
+
+def simulate_frank_copula(n_paths: int,
+                          theta: float,
+                          n_assets: int,
+                          n_steps: int,
+                          random_state: int = None
+                          ) -> np.array:
+    """
+    Simulates paths using a Frank copula.
+    Parameters
+    ----------
+    n_paths : int
+        Number of simulation paths.
+    theta : float
+        Parameter for the Frank copula (theta != 0).
+    n_assets : int
+        Number of assets.
+    n_steps : int
+        Number of time steps.
+    Returns
+    -------
+    np.array
+        Simulated paths.
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    k = np.arange(1, 1000)
+    p = (1 - np.exp(-theta))**k/(theta * k)
+    p /= p.sum()
+    V = np.random.choice(k, size=(n_paths, n_steps, 1), p=p.flatten())
+
+    X = np.random.uniform(size=(n_paths, n_steps, n_assets))
+
+    # Frank inverse generator
+    exp_neg_theta = np.exp(-theta)
+    numerator = (np.exp(-V * theta) - 1) * (1 - np.exp(-theta * X))
+    denominator = 1 - exp_neg_theta
+    denominator = np.where(denominator == 0, 1e-10, denominator)  # Avoid division by zero
+    term = np.clip(1 + numerator / denominator, a_min=1e-10, a_max=None)
+    U = - (1 / theta) * np.log(term)
+    U = np.clip(U, 0, 1)
+    return U
+
+```
+
+## VaR and Backtesting
+
+```python
+def portfolio_var(sim_matrix, alpha=0.01):
+    """
+    sim_matrix: (n_paths, horizon, n_assets)
+    return: VaR series for each horizon day, shape (horizon,)
+    """
+    portfolio_paths = sim_matrix.mean(axis=2)
+    var_series = np.quantile(portfolio_paths, alpha, axis=0)
+    return var_series
+
+def tl_color(n_exceptions, window=250):
+    """
+    Basel traffic-light thresholds for 250 days, 99% VaR.
+    If window != 250, we still use the same cutoffs for illustration.
+    """
+    if n_exceptions <= 4:
+        return "Green"
+    elif n_exceptions <= 9:
+        return "Yellow"
+    else:
+        return "Red"
+
+
+```
+
+
+## Main Functions
+``` python
+
+sim_days = 253
+n_paths = 1000
+train_days = 252 * 10
+refit_days = 253
+all_simulated_returns, model_info, all_independent_returns = main_copula(data, n_paths=n_paths, sim_days=sim_days, 
+                                                                         random_state=42, train_days=train_days, refit_freq=refit_days)
+
+# Analyze the simulated returns
+for key in model_info.keys():
+    # print(f"fitting date: {key}, copula: {model_info[key]['copula_name']}, nu: {model_info[key].get('nu', 'N/A')}")
+    simulated_matrix = all_independent_returns[key]
+    simulated_matrix_copula = all_simulated_returns[key]
+
+    portfolio_returns = np.sum(simulated_matrix, axis=2) / simulated_matrix.shape[2]
+    portfolio_returns_copula = np.sum(simulated_matrix_copula, axis=2) / simulated_matrix_copula.shape[2]
+
+    low_quantile = 0.1
+    high_quantile = 0.9
+    independent_var_low = np.quantile(portfolio_returns, low_quantile)
+    independent_var_high = np.quantile(portfolio_returns, high_quantile)
+    copula_var_low = np.quantile(portfolio_returns_copula, low_quantile)
+    copula_var_high = np.quantile(portfolio_returns_copula, high_quantile)
+
+    print(f"fitting date: {key}, \n independent 1% quantile: {independent_var_low:.5f}, copula 1% quantile: {copula_var_low:.5f}, \n independent 99% quantile: {independent_var_high:.5f}, copula 99% quantile: {copula_var_high:.5f}")
+
+# Analyze the model info
+for key in model_info.keys():
+    print(f"fitting date: {key}, copula: {model_info[key]['copula_name']}, nu: {model_info[key].get('nu', 'N/A')}")
+
+for key in model_info.keys():
+    corr_matrix = model_info[key]['corr_matrix']
+    print(f"fitting date: {key}, correlation matrix:\n{corr_matrix}\n")
+
+records = []
+sorted_dates = sorted(model_info.keys())
+for refit_date in sorted_dates:
+    sim_cop = copula_returns[refit_date]
+    sim_ind = indep_returns[refit_date]
+
+    n_paths, horizon, n_assets = sim_cop.shape
+
+    var_cop_series = portfolio_var(sim_cop, alpha=0.01)
+    var_ind_series = portfolio_var(sim_ind, alpha=0.01)
+
+    if refit_date not in hist_idx:
+        continue
+    start_pos = hist_idx.get_loc(refit_date)
+
+    for h in range(horizon):
+        pos = start_pos + 1 + h
+        if pos >= len(hist_idx):
+            break
+
+        realized_date = hist_idx[pos]
+        realized_ret = hist.iloc[pos].mean()
+
+        records.append({
+            "VaR_date": refit_date,
+            "Realized_date": realized_date,
+            "Realized_return": realized_ret,
+            "VaR_copula": var_cop_series[h],
+            "VaR_indep": var_ind_series[h]
+        })
+var_df = pd.DataFrame(records).sort_values("Realized_date").reset_index(drop=True)
+
+var_df["hit_copula"] = (var_df["Realized_return"] < var_df["VaR_copula"]).astype(int)
+var_df["hit_indep"]  = (var_df["Realized_return"] < var_df["VaR_indep"]).astype(int)
+
+# last 250 days
+window = 250
+n_exc_copula_250 = int(var_df["hit_copula"].tail(window).sum())
+n_exc_indep_250  = int(var_df["hit_indep"].tail(window).sum())
+
+TL_copula_250 = tl_color(n_exc_copula_250, window)
+TL_indep_250  = tl_color(n_exc_indep_250, window)
+
+print("=== Traffic-Light Backtest (last 250 days) ===")
+print(f"Copula model:      exceptions = {n_exc_copula_250:3d}, TL = {TL_copula_250}")
+print(f"Independent model: exceptions = {n_exc_indep_250:3d}, TL = {TL_indep_250}")
+
+# from 2020-01-08
+start_date = pd.Timestamp("2020-01-08")
+sub = var_df[var_df["VaR_date"] >= start_date].copy()
+
+n_exc_copula_all = int(sub["hit_copula"].sum())
+n_exc_indep_all  = int(sub["hit_indep"].sum())
+window_all = len(sub)
+
+TL_copula_all = tl_color(n_exc_copula_all, window_all)
+TL_indep_all  = tl_color(n_exc_indep_all, window_all)
+
+print(f"\n=== Traffic-Light Backtest (from {start_date.date()} to end, {window_all} days) ===")
+print(f"Copula model:      exceptions = {n_exc_copula_all:3d}, TL = {TL_copula_all}")
+print(f"Independent model: exceptions = {n_exc_indep_all:3d}, TL = {TL_indep_all}")
+
+block_size = 250
+start_date = pd.Timestamp("2020-01-08")
+sub = var_df[var_df["VaR_date"] >= start_date].copy().reset_index(drop=True)
+
+blocks = []
+for start in range(0, len(sub), block_size):
+    block = sub.iloc[start:start + block_size]
+    if len(block) < block_size:
+        break
+
+    n_exc_cop = int(block["hit_copula"].sum())
+    n_exc_ind = int(block["hit_indep"].sum())
+
+    TL_cop = tl_color(n_exc_cop, block_size)
+    TL_ind = tl_color(n_exc_ind, block_size)
+
+    blocks.append({
+        "block_id": len(blocks) + 1,
+        "start_date": block["VaR_date"].iloc[0],
+        "end_date": block["VaR_date"].iloc[-1],
+        "n_days": len(block),
+        "exc_copula": n_exc_cop,
+        "TL_copula": TL_cop,
+        "exc_indep": n_exc_ind,
+        "TL_indep": TL_ind
+    })
+
+blocks_df = pd.DataFrame(blocks)
+blocks_df
+start_date = pd.Timestamp("2020-01-08")
+sub = var_df[var_df["VaR_date"] >= start_date].copy()
+
+print("=== Sample info ===")
+print("Number of observations:", len(sub))
+print("Start date:", sub["VaR_date"].min())
+print("End date:", sub["VaR_date"].max())
+print()
+
+for col in ["VaR_copula", "VaR_indep"]:
+    s = sub[col]
+    print(f"=== {col} ===")
+    print("Mean:", s.mean())
+    print("Median:", s.median())
+    print("5% quantile:", s.quantile(0.05))
+    print("95% quantile:", s.quantile(0.95))
+    print("Min:", s.min())
+    print("Max:", s.max())
+    print()
+
+diff = sub["VaR_copula"] - sub["VaR_indep"]
+
+print("=== Difference: VaR_copula - VaR_indep ===")
+print("Mean diff:", diff.mean())
+print("Median diff:", diff.median())
+print("Min diff:", diff.min())
+print("Max diff:", diff.max())
+print("Share of days where copula VaR is more negative:",
+      (sub["VaR_copula"] < sub["VaR_indep"]).mean())
+print()
+
+print("=== Exceptions summary (99% VaR) ===")
+print("Total exceptions (copula):", int(sub["hit_copula"].sum()))
+print("Total exceptions (indep):", int(sub["hit_indep"].sum()))
+print("Exception rate copula:", sub["hit_copula"].mean())
+print("Exception rate indep:", sub["hit_indep"].mean())
+
+```
